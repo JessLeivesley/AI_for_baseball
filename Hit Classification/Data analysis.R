@@ -1,6 +1,7 @@
 ## Example script for running data analysis
 ## 7 June 2024
 
+# Libraries needed
 library(dplyr)
 library(tidymodels)
 library(tensorflow)
@@ -10,14 +11,16 @@ library(caret)
 
 # Read in data
 # I'm going to use Bo Bichette's 2023 data
-bichette_2023 <- read.csv("Batter Data/2023_Bichette.csv")
+bichette_2023 <- read.csv("Data/Batter Data/2023_Bichette.csv")
 
 # Look at the structure of the data
 str(bichette_2023)
 
-# Binary hit or not variable
+# Create a binary hit or not variable 
+# This is going to be our response/outcome variable
 bichette_2023$hit_outcome<-ifelse(is.na(bichette_2023$hc_x)==TRUE, 0, 1)
 
+# Plot the outcome with pitch location and highlight the strike zone
 ggplot(data = bichette_2023) + 
   geom_point(aes(x = plate_x, y = plate_z, col = factor(hit_outcome)), alpha = 0.2) +
   annotate("rect", xmin = -0.71, xmax = 0.71, ymin = mean(bichette_2023$sz_bot), ymax = mean(bichette_2023$sz_top),fill="NA", col="black")
@@ -27,7 +30,7 @@ ggplot(data = bichette_2023) +
   annotate("rect", xmin = -0.71, xmax = 0.71, ymin = mean(bichette_2023$sz_bot), ymax = mean(bichette_2023$sz_top),fill="NA", col="black") + 
   facet_wrap(~hit_outcome)
 
-# When running a ML analysis, it is best practice to split data in training, validating, and testing data. Eventually, we will also introduce cross-validation. We fit the model with the training data, and validate it after each epoch with the validate data. At the end of the model fitting process we will test how well the model performs on the unseen test data. 
+# When running a ML analysis, it is best practice to split data in training, validating, and testing data. Eventually, we will also introduce cross-validation. We fit the model with the training data, and validate it after each epoch with the validation data. At the end of the model fitting process we will test how well the model performs on the unseen test data. 
 
 set.seed(73)
 split<-initial_split(bichette_2023,strata = hit_outcome, prop=0.80)
@@ -53,9 +56,13 @@ ggplot()+
   geom_density(data = validate, aes(x = plate_z), fill = "green", alpha = 0.25) + 
   geom_density(data = test, aes(x = plate_z), fill = "blue", alpha = 0.25)
 
+# I am going to fit a model with just the pitch location as the features
+# the X matrix is a matrix of each of the input features
 x_train<-as.matrix(train[,c(30,31)])
+# Scale the data
 scaler <- preProcess(x_train, method = 'scale')
 x_train <- predict(scaler, x_train)
+# The Y vector/matrix is the output feature
 y_train<-train[,93]
 
 x_validate<-as.matrix(validate[,c(30,31)])
@@ -66,24 +73,38 @@ x_test<-as.matrix(test[,c(30,31)])
 x_test <- predict(scaler, x_test)
 y_test<-test[,93]
 
+
+# Fit the model
+# We build it up in layers
+# First, initialize the model
 model1 <- keras_model_sequential()
+
 model1 %>%
-  layer_dense(units = 2, input_shape = c(2)) %>%
+  # Add one hidden layer of 2 units (neurons), the input shape is 2 because we have two input features
+  layer_dense(units = 2, input_shape = 2) %>%
+  # I am using relu activation function
   layer_activation_relu()%>%
+  # Add the final layer which is one prediction per entry that is the probability of a hit
   layer_dense(units = 1, activation = "sigmoid")
 
+# Plot a diagram od the model
+plot(model1,show_shapes=T)
+
+# Complile the model
 model1 %>% compile(
   loss = 'binary_crossentropy',
   optimizer =  optimizer_adam(),
   metrics = c('accuracy'))
 
+# Fit the model
 model_history <- model1 %>% 
   fit(
   x_train, y_train,
   batch_size = 500, 
-  epochs = 150,
+  epochs = 150, # We want the number of epochs to be big enough that the validation loss is as low as possible, but eventually it will start to increase after when the model starts to overfit. 
   validation_data = list(x_validate,y_validate))
 
+# Examine how well the model performs on test data
 evaluate(model1, x_test, y_test) 
 
 preds<-predict(model1, x = x_test) # This is the probability of a hit
@@ -204,3 +225,5 @@ hit.predictions <- ifelse(preds > 0.5 , 1, 0)
 hit.predictions<-as.factor(hit.predictions)
 
 confusionMatrix(hit.predictions,as.factor(test$hit_outcome))
+
+# The tensorflow guide will help you decide what parameters can be changed. Initially, we should decide which predictors are important to include in the model and if any features need to be engineered (e.g. pitcher handedness?). Then we would tune hyperparameters such as the number of hidden layers, the number of neurons in each layers, the batch size and number of epochs
