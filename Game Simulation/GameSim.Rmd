@@ -1,0 +1,183 @@
+---
+title: "GameSim"
+date: "2024-05-16"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval=TRUE, include=TRUE, echo=TRUE, message=FALSE, warning=FALSE)
+```
+
+## Baseball Analysis
+
+```{r}
+data <- read.csv("all2023.csv", header=TRUE)
+header <- read.table("descriptions.txt", sep="\t", header=TRUE)
+new_header <- header$Header
+colnames(data) <- new_header
+```
+
+``` {r}
+data $HALF.INNING <- with(data, 
+                          paste(GAME_ID, INN_CT, BAT_HOME_ID))
+                          
+data$RUNS.SCORED <- with(data, (BAT_DEST_ID > 3) +
+                               (RUN1_DEST_ID > 3) + (RUN2_DEST_ID > 3) + (RUN3_DEST_ID > 3))
+```
+
+```{r}
+get.state <- function(runner1, runner2, runner3, outs){
+  runners <- paste(runner1, runner2, runner3, sep="")
+  paste(runners, outs)
+}
+
+RUNNER1 <- ifelse(as.character(data[,"BASE1_RUN_ID"])=="", 0, 1)
+RUNNER2 <- ifelse(as.character(data[,"BASE2_RUN_ID"])=="", 0, 1)
+RUNNER3 <- ifelse(as.character(data[,"BASE3_RUN_ID"])=="", 0, 1)
+data$STATE <- get.state(RUNNER1, RUNNER2, RUNNER3,
+data$OUTS_CT)
+NRUNNER1 <- with(data, as.numeric(RUN1_DEST_ID==1 |
+BAT_DEST_ID==1))
+NRUNNER2 <- with(data, as.numeric(RUN1_DEST_ID==2 |
+RUN2_DEST_ID==2 | BAT_DEST_ID==2))
+NRUNNER3 <- with(data, as.numeric(RUN1_DEST_ID==3 |
+RUN2_DEST_ID==3 | RUN3_DEST_ID==3 | BAT_DEST_ID==3))
+NOUTS <- with(data, OUTS_CT + EVENT_OUTS_CT)
+data$NEW.STATE <- get.state(NRUNNER1, NRUNNER2, NRUNNER3, NOUTS)
+```
+
+```{r}
+data <- subset(data, (STATE != NEW.STATE) | (RUNS.SCORED > 0))
+library(plyr)
+data.outs <- ddply(data, .(HALF.INNING), summarize, Outs.Inning=sum(EVENT_OUTS_CT))
+data <- merge(data, data.outs)
+dataC <- subset(data, Outs.Inning == 3)
+dataC <- subset(data, BAT_EVENT_FL == TRUE)
+```
+
+``` {r}
+library(car)
+dataC$NEW.STATE <- recode(dataC$NEW.STATE, 
+                          "c('000 3', '100 3', '010 3', '001 3', 
+                          '110 3', '101 3', '011 3', '111 3')='3'")
+```
+
+```{r}
+# matrix of counts 
+T.matrix <- with(dataC, table(STATE, NEW.STATE))
+# convert to probability matrix
+P.matrix <- prop.table(T.matrix, 1)
+# Make the prob of staying in this state 1
+P.matrix <- rbind(P.matrix, c(rep(0, 24), 1))
+```
+
+```{r}
+# Prob of transitioning out of 0 outs 0 runners on base state
+P1 <- round(P.matrix["000 0", ], 3)
+data.frame(Prob=P1[P1 > 0])
+```
+```{r}
+# Prob of transitioning out of 2 outs runner on second state
+P2 <- round(P.matrix["010 2", ], 3)
+data.frame(Prob=P2[P2 > 0])
+```
+
+```{r}
+# takes a state as input and returns the sum of the number of runners and outs
+count.runners.outs <- function(s)
+  sum(as.numeric(strsplit(s,"")[[1]]), na.rm=TRUE)
+runners.outs <- sapply(dimnames(T.matrix)[[1]], count.runners.outs)[-25]
+R <- outer(runners.outs + 1, runners.outs, FUN="-")
+dimnames(R)[[1]] <- dimnames(T.matrix)[[1]][-25]
+dimnames(R)[[2]] <- dimnames(T.matrix)[[1]][-25]
+R <- cbind(R, rep(0, 24))
+```
+
+```{r}
+simulate.half.inning <- function(P, R, start=1){
+  s <- start; path <- NULL; runs <- 0
+  while(s < 25){
+    s.new <- sample(1:25, 1, prob=P[s, ])
+    path <- c(path, s.new)
+    runs <- runs + R[s, s.new]
+    s <- s.new
+  }
+  runs
+}
+```
+
+```{r}
+RUNS <- replicate(10000, simulate.half.inning(T.matrix, R))
+table(RUNS)
+```
+```{r}
+sum(RUNS[RUNS >= 5]) / 10000
+mean(RUNS)
+```
+
+```{r}
+RUNS.j <- function(j){
+  mean(replicate(10000, simulate.half.inning(T.matrix, R, j)))
+}
+Runs.Expectancy <- sapply(1:24, RUNS.j)
+Runs.Expectancy <- t(round(matrix(Runs.Expectancy, 3, 8), 2))
+dimnames(Runs.Expectancy)[[2]] <- c("0 outs", "1 out", "2 outs")
+dimnames(Runs.Expectancy)[[1]] <- c("000", "001", "010", "011", "100",
+                                    "101", "110", "111")
+Runs.Expectancy
+```
+```{r}
+Runs <- matrix(
+  c(0.47, 0.25, 0.10, 1.45, 0.94, 0.32,
+    1.06, 0.65, 0.31, 1.93, 1.34, 0.54,
+    0.84, 0.50, 0.22, 1.75, 1.15, 0.49,
+    1.41, 0.87, 0.42, 2.17, 1.47, 0.76),
+  8, 3, byrow=TRUE)
+Runs - Runs.Expectancy
+```
+
+```{r}
+P.matrix.3 <- P.matrix %*% P.matrix %*% P.matrix
+sorted.P <- sort(round(P.matrix.3["000 0", ], 3), decreasing=TRUE)
+head(data.frame(Prob=sorted.P))
+```
+
+```{r}
+Q <- P.matrix[-25, -25]
+N <- solve(diag(rep(1, 24)) - Q)
+
+N.0000 <- round(N["000 0", ], 2)
+head(data.frame(N=N.0000))
+```
+
+```{r}
+Length <- round(t(N %*% rep(1, 24)), 2)
+data.frame(L=Length[1, 1:8])
+```
+
+```{r}
+dataC$HOME_TEAM_ID <- with(dataC, substr(GAME_ID, 1, 3))
+dataC$BATTING.TEAM <- with(dataC,
+                               ifelse(BAT_HOME_ID == 0,
+                                      as.character(AWAY_TEAM_ID),
+                                      as.character(HOME_TEAM_ID)))
+Team.T <- with(dataC, table(BATTING.TEAM, STATE, NEW.STATE))
+
+d.state <- subset(dataC, STATE == '100 2')
+Team.T.S <- with(d.state, table(BATTING.TEAM, NEW.STATE))
+Team.T.S
+```
+
+```{r}
+WAS.Trans <- Team.T.S["WAS", ]
+WAS.n <- sum(WAS.Trans)
+P.WAS <- WAS.Trans / WAS.n
+ALL.Trans <- with(subset(dataC, STATE == '100 2'),
+                  table(NEW.STATE))
+P.ALL <- ALL.Trans / sum(ALL.Trans)
+K <- 1274
+P.EST <- WAS.n / (K + WAS.n) * P.WAS + K / (K + WAS.n) * P.ALL
+data.frame(WAS=round(P.WAS, 4),
+           ALL=round(c(P.ALL), 4),
+           EST=round(c(P.EST), 4))
+```
