@@ -3,6 +3,8 @@
 library(dplyr)
 library(car)
 library(ggplot2)
+library(markovchain)
+
 
 #------------------------------------
 
@@ -94,6 +96,12 @@ P.matrix <- rbind(P.matrix, c(rep(0, 24), 1))
 
 #matrix of probabilities (base only to bases with outs)
 P.matrix.base <- prop.table(T.matrix.base, 1)
+rownames(P.matrix) <- colnames(P.matrix)
+
+#transition matrix visualization
+mcStates <- sort(unique(data2023C$NEW.STATE))[]
+mc <-  new("markovchain", states = mcStates, byrow = TRUE, 
+           transitionMatrix = P.matrix, name = "full")
 
 #half-inning simulation
 runners.outs <- sapply(dimnames(T.matrix)[[1]], count.runners.outs)[-25]
